@@ -22,6 +22,7 @@
 
 #include <stdio.h>       /* magical incantations */
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <assert.h>
 #include <memory.h>
@@ -50,13 +51,16 @@ void Give_Info()
 
 /* global data */
 int VectLen;        /* number of attributes */
+#define FullVectLen (VectLen + 1) /* number of attributes + a label whether it is an anomaly */
+#define LabelCol (FullVectLen) /* index of the label column (for Xof) */
+int IsLabeled; /* bool flag, whether the labels should be written to the output file */
 int XCnt;       /* number of observations */
 int PollCnt;        /* number to pollute */
 double PollFrac;      /* fraction to pollute */
 double NumUnits;      /* location of polluted means */
 int NumClusters;      /* number of outliers clusters */
 double *X;        /* The observations */
-#define Xof(i,j) *(X+(i-1)*VectLen+j-1) /* X[i,j] */
+#define Xof(i,j) *(X+(i-1)*FullVectLen+j-1) /* X[i,j] */
 int *JBits;                       /* indicators for J set (squander bits) */
 double *XBarJ;                    /* x bar values for the J set */
 #define XBarJof(i) *(XBarJ+i-1)   /* XBarJ[i] */
@@ -73,7 +77,7 @@ double *Chol;                     /* COLUMN MAJOR "left" cholesky factor */
 #define Cholof(i,j) (*(Chol+(i-1)+(j-1)*VectLen))  /* Chol[i,j] */
 double *SqResiduals;   /* squared distances, zero based */
 double *XSave;         /* scratch space */
-#   define XSaveof(i,j) *(XSave+(i-1)*VectLen+j-1) /* col major...*/
+#   define XSaveof(i,j) *(XSave+(i-1)*FullVectLen+j-1) /* col major...*/
 
 long seed;      /* URan seed */
 double Lambda;              /* covariance matrix multiplier */
@@ -154,7 +158,11 @@ void Load_Parms()
   }
   NumClusters = 0;  // to facilitate gencross input files
   fscanf(f,"%d %d %lf %lf %d",&VectLen, &XCnt, &PollFrac, &NumUnits, &NumClusters);
+  char label[255] = "";
+  fscanf(f, " %s", &label);
+  printf("'%s'", label);
   fclose(f);
+  IsLabeled = strcmp(label, "label") == 0 ? 1 : 0;
   if (!NumClusters) NumClusters = 1;
   PollCnt = (int)(PollFrac * (double)XCnt + 0.5);
   if (XCnt <= VectLen) {
@@ -194,9 +202,11 @@ void Generate_Data()
 {
     int row, col;       /* to loop */
 
-  for (row = 1; row <= XCnt; row++)
-   for (col = 1; col <= VectLen; col++)
-    Xof(row,col) =  Norm((double)0.,(double)1.,&seed);
+    for (row = 1; row <= XCnt; row++) {
+        for (col = 1; col <= VectLen; col++)
+            Xof(row, col) = Norm((double)0., (double)1., &seed);
+        Xof(row, LabelCol) = 0;
+    }
 }
 
 /*-------------------------------------------------------------------------*/
@@ -222,6 +232,7 @@ void Pollute()
     for (i=1; i<=VectLen; i++) {
         Xof(Samp, i) = Norm(PollDist*DirVect[i], sqrt(Lambda), &seed);
     }
+    Xof(Samp, LabelCol) = 1;
   }
 }
 
@@ -241,6 +252,8 @@ void Write_Data()
 
   for (row = 1; row <= XCnt; row++) {
     for (col = 1; col <= VectLen; col++) fprintf(f," %14.11lf",Xof(row,col));
+    if (IsLabeled)
+	  fprintf(f, " %d", (int) Xof(row, LabelCol));
     fprintf(f,"\n");
   }
   fclose(f);
@@ -255,6 +268,7 @@ void Dump_Data(char *msg)
   printf("Dump of X data array %s\n",msg);
   for (row=1; row<=XCnt; row++) {
     for (col=1; col<=VectLen; col++) printf("%7.5lf ",Xof(row,col));
+	printf(" %d", (int)Xof(row, LabelCol));
     printf("\n");
   }
 }
@@ -263,13 +277,13 @@ void Dump_Data(char *msg)
 void Make_Room()
 /* allocate space for global data structures */
 {
-  X = malloc(VectLen*XCnt*sizeof(double)); ALLCHK(X)
+  X = malloc(FullVectLen*XCnt*sizeof(double)); ALLCHK(X)
   JBits = malloc((XCnt)*sizeof(int)); ALLCHK(JBits)
   XBarJ = malloc(VectLen*sizeof(double)); ALLCHK(XBarJ)
   XJ = malloc((XCnt)*VectLen*sizeof(double)); ALLCHK(XJ)
   C = malloc(VectLen*VectLen*2*sizeof(double)); ALLCHK(C)
   Chol = malloc(VectLen*VectLen*sizeof(double)); ALLCHK(Chol)
-  XSave = malloc(VectLen*XCnt*sizeof(double)); ALLCHK(XSave)
+  XSave = malloc(FullVectLen*XCnt*sizeof(double)); ALLCHK(XSave)
   SqResiduals = malloc((XCnt)*sizeof(double)); ALLCHK(SqResiduals)
 }
 /*-------------------------------------------------------------------------*/
@@ -573,11 +587,12 @@ int main()
   Form_C(JCnt);
   InvertC(C, VectLen, &Det);
     
-  memcpy(XSave, X, XCnt * VectLen * sizeof(double));
+  memcpy(XSave, X, XCnt * FullVectLen * sizeof(double));
   /* randomize the rows of X to make X working */
   /* column major is a pain....*/
   Generate_Permutation(XCnt, Permutation);
-  for (j=1; j<=XCnt; j++) for (k=1; k<=VectLen; k++) 
+  for (j=1; j<=XCnt; j++)
+	for (k=1; k<=FullVectLen; k++) 
       Xof(j,k) = XSaveof((*(Permutation+j-1)),k);
   Compute_Distance_Vector();
   Write_Data();
